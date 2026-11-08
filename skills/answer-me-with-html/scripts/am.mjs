@@ -8926,7 +8926,8 @@ var vn_compare_default = {
 };
 
 // src/components/index.js
-var ALL2 = [callout_default, kv_default, timeline_default, annot_default, tree_default, limits_default, chart_default, sequence_default, flow_default, er_default, ask_default, vn_quiz_default, vn_glossary_default, vn_shot_default, vn_videomap_default, vn_split_default, vn_compare_default];
+var ALL2 = [callout_default, kv_default, timeline_default, annot_default, tree_default, limits_default, chart_default, sequence_default, flow_default, er_default, ask_default];
+ALL2.push(vn_quiz_default, vn_glossary_default, vn_shot_default, vn_videomap_default, vn_split_default, vn_compare_default);
 var COMPONENTS = new Map(ALL2.map((c2) => [c2.name, c2]));
 var RAW_LANGS = /* @__PURE__ */ new Set(["html", "svg"]);
 

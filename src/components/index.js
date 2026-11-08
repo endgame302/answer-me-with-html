@@ -20,7 +20,10 @@ import compare from './vn-compare.js';
 
 export { ComponentError } from './error.js';
 
-const ALL = [callout, kv, timeline, annot, tree, limits, chart, sequence, flow, er, ask, quiz, glossary, shot, videomap, split, compare];
+const ALL = [callout, kv, timeline, annot, tree, limits, chart, sequence, flow, er, ask];
+
+// Video notes (this fork), on a line of their own so upstream changes to the list above merge cleanly.
+ALL.push(quiz, glossary, shot, videomap, split, compare);
 
 export const COMPONENTS = new Map(ALL.map((c) => [c.name, c]));
 export const RAW_LANGS = new Set(['html', 'svg']);
