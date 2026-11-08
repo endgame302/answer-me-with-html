@@ -64,6 +64,18 @@ export function readGlossary(text) {
   return entries;
 }
 
+// The singular form of a term, roughly: worktrees → worktree, classes → class, MCP servers → mcp server. Backticks are ignored.
+export const termStem = (term) => term.trim().toLowerCase().replace(/`/g, '').replace(/(ss|sh|ch|x|z)es$/, '$1').replace(/([^su])s$/, '$1');
+
+// The glossary entry for a term as the text writes it: exactly, or in its singular or plural form.
+export function findTerm(term) {
+  const key = term.trim().toLowerCase();
+  if (vn.glossary.has(key)) return [key, vn.glossary.get(key)];
+  const stem = termStem(term);
+  for (const [k, entry] of vn.glossary) if (termStem(entry.term) === stem) return [k, entry];
+  return [key, undefined];
+}
+
 export function resetVideoNotes(meta, source) {
   vn.video = typeof meta.video === 'string' ? meta.video.trim() : '';
   vn.length = seconds(meta.length);

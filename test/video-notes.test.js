@@ -47,7 +47,7 @@ test('a term with no meaning, an unused meaning and the old {g:term|meaning} for
   const { stats } = page(body);
   assert.ok(stats.htmlWarnings.some((w) => /"Nope" has no meaning/.test(w.message)));
   assert.ok(stats.htmlWarnings.some((w) => /marker not understood/.test(w.message)));
-  assert.ok(stats.componentWarnings.some((w) => w.component === 'glossary' && /"Unused" is never used/.test(w.message)));
+  assert.ok(stats.componentWarnings.some((w) => w.component === 'glossary' && /"Unused" is not mentioned anywhere/.test(w.message)));
 });
 
 test('### headings get ids, so goal links reach them; markers and links stay out of the id', () => {
@@ -95,4 +95,45 @@ test('the video map draws parts to scale and refuses parts out of order', () => 
 
 test('a shot needs a caption, and its caption keeps its markers', () => {
   assert.throws(() => page('## A Part\n```shot\n/nowhere.png\n```'), /caption/);
+});
+
+test('split draws one bar whose shares add up to 100, and refuses other totals', () => {
+  const { html } = page('## A Part\n```split\n*Alone | 10\nWaits | 90\n```');
+  assert.match(main(html), /class="am-diagram vn-split"/);
+  assert.match(main(html), /10% Alone; 90% Waits/);
+  assert.throws(() => page('## A Part\n```split\nA | 10\nB | 80\n```'), /add up to 90, not 100/);
+});
+
+test('compare puts options side by side and marks the chosen one', () => {
+  const { html } = page('## A Part\n```compare\n## One | today\n- fast\n! fragile\n## Two * | his pick\n- slow\n+ safe\n```');
+  const m = main(html);
+  assert.equal((m.match(/class="vn-cmp-card/g) ?? []).length, 2);
+  assert.match(m, /vn-cmp-card--pick[\s\S]*his choice/);
+  assert.match(m, /class="vn-cmp-bad"/);
+  assert.match(m, /class="vn-cmp-good"/);
+  assert.throws(() => page('## A Part\n```compare\n## Only one\n- x\n```'), /at least two/);
+});
+
+test('a plural marker finds the singular entry, and an entry listed in both forms is reported', () => {
+  const { html } = page('## A Part\nTwo {g:Git worktrees} here.\n\n## Glossary\n```glossary\nGit worktree | A second working copy.\n```');
+  assert.match(main(html), /<abbr class="vn-gl"[^>]*title="A second working copy\.">Git worktrees<\/abbr>/);
+  const { stats } = page('## A Part\n{g:Git worktree}\n\n## Glossary\n```glossary\nGit worktree | A second working copy.\nGit worktrees | Duplicate.\n```');
+  assert.ok(stats.componentWarnings.some((w) => /listed twice \(as Git worktree and Git worktrees\)/.test(w.message)));
+});
+
+test('a glossary entry mentioned in plain text is not reported; one never mentioned is', () => {
+  const body = '## A Part\nAn abliterated one, and claude-opus[1m].\n\n## Glossary\n```glossary\nAbliterated model | No refusals.\n`[1m]` | Long context.\nNever here | Unused.\n```';
+  const { stats } = page(body);
+  const flagged = stats.componentWarnings.filter((w) => w.component === 'glossary').map((w) => w.message);
+  assert.deepEqual(flagged, ['"Never here" is not mentioned anywhere on the page']);
+});
+
+test('each quiz counts its own questions, and only the last adds the page total', () => {
+  assert.match(QUIZ_JS, /' here\.'/);
+  assert.match(QUIZ_JS, /i === quizzes\.length - 1/);
+});
+
+test('a video-notes page tells the browser its colour scheme, so native controls follow dark mode', () => {
+  const { html } = page('## A Part\nText.');
+  assert.match(html, /html\[data-mode="dark"\]\{color-scheme:dark\}/);
 });

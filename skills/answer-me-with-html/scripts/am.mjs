@@ -4427,6 +4427,14 @@ function readGlossary(text2) {
   });
   return entries;
 }
+var termStem = (term) => term.trim().toLowerCase().replace(/`/g, "").replace(/(ss|sh|ch|x|z)es$/, "$1").replace(/([^su])s$/, "$1");
+function findTerm(term) {
+  const key = term.trim().toLowerCase();
+  if (vn.glossary.has(key)) return [key, vn.glossary.get(key)];
+  const stem = termStem(term);
+  for (const [k, entry] of vn.glossary) if (termStem(entry.term) === stem) return [k, entry];
+  return [key, void 0];
+}
 function resetVideoNotes(meta, source) {
   vn.video = typeof meta.video === "string" ? meta.video.trim() : "";
   vn.length = seconds(meta.length);
@@ -4477,12 +4485,12 @@ function videoNotesInline(note2) {
         return `<span class="vn-tag vn-tag-${esc(kind2)}">${esc(TAGS[kind2] ?? kind2)}</span>`;
       }),
       marker("vnTerm", /^\{g:([^{}|\n]+)\}/, ([, term], raw) => {
-        const entry = vn.glossary.get(term.trim().toLowerCase());
+        const [key, entry] = findTerm(term);
         if (!entry) {
           note2(raw, `glossary term "${term.trim()}" has no meaning in the page's glossary block`);
           return esc(term);
         }
-        vn.used.add(term.trim().toLowerCase());
+        vn.used.add(key);
         return `<abbr class="vn-gl" tabindex="0" title="${esc(plain(entry.meaning))}">${esc(term)}</abbr>`;
       })
     ]
@@ -8775,15 +8783,16 @@ var vn_glossary_default = {
   syntax: "```glossary\nHarness | The agent program that runs a model and gives it tools.\n```",
   example: "```glossary\nADE | Agent development environment: the app you run coding agents in.\n```",
   render(text2, { warn }) {
-    const seen = /* @__PURE__ */ new Set();
+    const seen = /* @__PURE__ */ new Map();
     const rows = contentLines(text2).map(({ text: line, line: at3 }) => {
       const bar = line.indexOf("|");
       if (bar < 0) throw new ComponentError("glossary: write each line as term | meaning", at3);
       const term = line.slice(0, bar).trim();
       const meaning = line.slice(bar + 1).trim();
       if (!term || !meaning) throw new ComponentError("glossary: a line needs both a term and a meaning", at3);
-      if (seen.has(term.toLowerCase())) warn({ line: at3, message: `glossary: "${term}" is listed twice; the first meaning is used` });
-      seen.add(term.toLowerCase());
+      const stem = termStem(term);
+      if (seen.has(stem)) warn({ line: at3, message: `glossary: "${term}" is listed twice (as ${seen.get(stem)} and ${term}); keep one` });
+      else seen.set(stem, term);
       return `<tr><td>${mdInline(term)}</td><td>${mdInline(meaning)}</td></tr>`;
     });
     return `<div class="am-md"><div class="am-table-wrap vn-glossary"><table><thead><tr><th>Term</th><th>Meaning</th></tr></thead><tbody>${rows.join("")}</tbody></table></div></div>`;
@@ -8851,8 +8860,73 @@ var vn_videomap_default = {
   }
 };
 
+// src/components/vn-split.js
+var vn_split_default = {
+  name: "split",
+  summary: "Video notes: one whole split into shares, as a single bar",
+  syntax: "```split\n*Runs on its own: the safest cases | 10\nWaits for your OK | 90\n```\n- The shares add up to 100. * highlights a share.",
+  example: "```split\n*Autonomous | 10\nWaits for you | 90\n```",
+  render(text2, { uid }) {
+    const rows = contentLines(text2).map(({ text: line, line: at3 }) => {
+      const bar = line.lastIndexOf("|");
+      if (bar < 0) throw new ComponentError("split: write each share as label | number", at3);
+      const hot = line.startsWith("*");
+      const share = Number(line.slice(bar + 1).replace("%", "").trim());
+      if (!Number.isFinite(share) || share <= 0) throw new ComponentError("split: a share is a number above 0", at3);
+      return { label: line.slice(hot ? 1 : 0, bar).trim(), share, hot };
+    });
+    if (rows.length < 2) throw new ComponentError("split needs at least two shares", 1);
+    const total = rows.reduce((sum2, r) => sum2 + r.share, 0);
+    if (Math.abs(total - 100) > 0.5) throw new ComponentError(`split: the shares add up to ${total}, not 100`, 1);
+    const W3 = 720, left = 12, right = 708, y2 = 14, h = 44;
+    let x = left;
+    let bars = "";
+    let keys = "";
+    rows.forEach((r, i) => {
+      const w2 = (right - left) * r.share / 100;
+      bars += `<rect x="${x}" y="${y2}" width="${w2}" height="${h}" rx="6" class="vn-split-bar${r.hot ? " vn-split-bar--hot" : ""}"/><text x="${x + w2 / 2}" y="${y2 + h / 2 + 6}" text-anchor="middle" class="vn-split-pct">${r.share}%</text>`;
+      keys += `<text x="${left}" y="${y2 + h + 26 + i * 22}" class="vn-split-key"><tspan class="vn-split-pct">${r.share}%</tspan>  ${esc(r.label)}</text>`;
+      x += w2;
+    });
+    const height = y2 + h + 16 + rows.length * 22;
+    return `<figure class="am-diagram vn-split"><svg viewBox="0 0 ${W3} ${height}" width="${W3}" height="${height}" role="img" aria-label="${esc(rows.map((r) => `${r.share}% ${r.label}`).join("; "))}" xmlns="http://www.w3.org/2000/svg">${bars}${keys}</svg></figure>`;
+  }
+};
+
+// src/components/vn-compare.js
+var vn_compare_default = {
+  name: "compare",
+  summary: "Video notes: options side by side, each with its points and outcome",
+  syntax: "```compare\n## Main checkout | all agents on your machine\n- one checkout, one CPU\n! they edit the same files\n## Cloud sandbox * | his choice\n- each agent its own computer\n+ contained if one is hacked\n```",
+  example: "```compare\n## Option A | today\n- fast\n! fragile\n## Option B * | his pick\n- slower\n+ safe\n```",
+  render(text2) {
+    const cards = [];
+    text2.split("\n").forEach((raw, i) => {
+      const line = raw.trim();
+      if (!line) return;
+      const head = line.match(/^##\s+(.+?)(\s\*)?\s*(?:\|\s*(.*))?$/);
+      if (head) {
+        cards.push({ title: head[1].trim(), pick: Boolean(head[2]), sub: (head[3] ?? "").trim(), items: [] });
+        return;
+      }
+      if (!cards.length) throw new ComponentError('compare: start each option with "## Title | subtitle"', i + 1);
+      const kind2 = line.startsWith("+ ") ? "good" : line.startsWith("! ") ? "bad" : line.startsWith("- ") ? "point" : null;
+      if (!kind2) throw new ComponentError('compare: start each line with "- " (a point), "+ " (good outcome) or "! " (problem)', i + 1);
+      cards.at(-1).items.push({ kind: kind2, text: line.slice(2).trim() });
+    });
+    if (cards.length < 2) throw new ComponentError("compare needs at least two options", 1);
+    const html = cards.map((c2) => {
+      const points = c2.items.filter((x) => x.kind === "point").map((x) => `<li>${mdInline(x.text)}</li>`).join("");
+      const outcomes = c2.items.filter((x) => x.kind !== "point").map((x) => `<p class="vn-cmp-${x.kind}"><span aria-hidden="true">${x.kind === "good" ? "\u2713" : "\u2717"}</span> ${mdInline(x.text)}</p>`).join("");
+      const pick = c2.pick ? '<span class="vn-cmp-pick">his choice</span>' : "";
+      return `<div class="vn-cmp-card${c2.pick ? " vn-cmp-card--pick" : ""}"><div class="vn-cmp-title">${mdInline(c2.title)} ${pick}</div>${c2.sub ? `<div class="vn-cmp-sub">${mdInline(c2.sub)}</div>` : ""}${points ? `<ul>${points}</ul>` : ""}${outcomes}</div>`;
+    }).join("");
+    return `<div class="vn-compare" style="--vn-cols:${cards.length}">${html}</div>`;
+  }
+};
+
 // src/components/index.js
-var ALL2 = [callout_default, kv_default, timeline_default, annot_default, tree_default, limits_default, chart_default, sequence_default, flow_default, er_default, ask_default, vn_quiz_default, vn_glossary_default, vn_shot_default, vn_videomap_default];
+var ALL2 = [callout_default, kv_default, timeline_default, annot_default, tree_default, limits_default, chart_default, sequence_default, flow_default, er_default, ask_default, vn_quiz_default, vn_glossary_default, vn_shot_default, vn_videomap_default, vn_split_default, vn_compare_default];
 var COMPONENTS = new Map(ALL2.map((c2) => [c2.name, c2]));
 var RAW_LANGS = /* @__PURE__ */ new Set(["html", "svg"]);
 
@@ -9227,6 +9301,8 @@ function cspMeta(scripts, { live = false } = {}) {
 
 // src/video-notes/page.js
 var VN_CSS = `
+html[data-mode="light"]{color-scheme:light}html[data-mode="dark"]{color-scheme:dark}
+@media (prefers-color-scheme: dark){html[data-mode="auto"]{color-scheme:dark}}
 .vn-stamp{font:600 .78em/1 var(--font-mono);padding:.15em .4em;border:1px solid var(--line-2);border-radius:999px;text-decoration:none;white-space:nowrap;color:var(--accent)}
 a.vn-stamp:hover{background:var(--accent-bg)}
 .vn-tag{display:inline-block;font:600 .7em/1.4 var(--font-sans);padding:0 .45em;border-radius:4px;border:1px solid currentColor;vertical-align:.12em;white-space:nowrap;color:var(--ink-2)}
@@ -9243,17 +9319,32 @@ a.vn-stamp:hover{background:var(--accent-bg)}
 .vn-map text{fill:var(--ink)}.vn-map .vn-map-label{font:700 13px var(--font-sans)}.vn-map .vn-map-small{font:11.5px var(--font-sans);fill:var(--ink-2)}
 .vn-map .vn-map-tick{stroke:var(--line-2)}.vn-map .vn-map-bar{fill:var(--fill);stroke:var(--line)}.vn-map .vn-map-bar--hot{fill:var(--accent-bg);stroke:var(--accent)}
 .vn-map a:hover .vn-map-bar{stroke-width:2}
+.vn-split .vn-split-bar{fill:var(--fill);stroke:var(--line)}.vn-split .vn-split-bar--hot{fill:var(--accent-bg);stroke:var(--accent)}
+.vn-split .vn-split-pct{font:700 14px var(--font-sans);fill:var(--ink)}.vn-split .vn-split-key{font:13px var(--font-sans);fill:var(--ink-2)}
+.vn-compare{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.8em;margin:1em 0}
+.vn-cmp-card{border:1px solid var(--line-2);border-radius:var(--radius);padding:.7em .9em}.vn-cmp-card--pick{border-color:var(--accent);background:var(--accent-bg)}
+.vn-cmp-title{font-weight:700}.vn-cmp-sub{font-size:var(--am-fs-small);color:var(--ink-2)}
+.vn-cmp-card ul{margin:.5em 0;padding-left:1.1em}.vn-cmp-card p{margin:.3em 0;font-size:var(--am-fs-small)}
+.vn-cmp-good{color:var(--ok)}.vn-cmp-bad{color:var(--warn)}
+.vn-cmp-pick{font:600 .7em/1.4 var(--font-sans);padding:0 .45em;border:1px solid var(--accent);border-radius:4px;color:var(--accent);vertical-align:.12em}
 .am-md h3{font-size:var(--am-fs-heading)}
 `;
 var QUIZ_JS = `(() => {
+  const quizzes = [...document.querySelectorAll('.vn-quiz')];
   const boxes = [...document.querySelectorAll('.vn-q-box')];
   if (!boxes.length) return;
   const key = 'vn-quiz:' + document.title;
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(key) || '{}'); } catch (e) { saved = {}; }
+  const known = (list) => list.filter((b) => b.checked).length;
   const show = () => {
-    const n = boxes.filter((b) => b.checked).length;
-    document.querySelectorAll('.vn-quiz-count').forEach((p) => { p.textContent = 'You can answer ' + n + ' of ' + boxes.length + ' questions on this page.'; });
+    quizzes.forEach((q, i) => {
+      const mine = [...q.querySelectorAll('.vn-q-box')];
+      let text = 'You can answer ' + known(mine) + ' of ' + mine.length + ' here.';
+      if (quizzes.length > 1 && i === quizzes.length - 1) text += ' On the whole page: ' + known(boxes) + ' of ' + boxes.length + '.';
+      const p = q.querySelector('.vn-quiz-count');
+      if (p) p.textContent = text;
+    });
   };
   boxes.forEach((b) => {
     b.checked = !!saved[b.id];
@@ -9261,10 +9352,21 @@ var QUIZ_JS = `(() => {
   });
   show();
 })();`;
+function pageText(html) {
+  const main2 = html.slice(html.indexOf("<main"), html.lastIndexOf("</main>"));
+  return main2.replace(/<div class="am-table-wrap vn-glossary">[\s\S]*?<\/table><\/div>/g, " ").replace(/<(script|style)\b[\s\S]*?<\/\1>/g, " ").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").toLowerCase();
+}
+var escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+var mentioned = (text2, term) => term.replace(/`/g, "").split(",").map((part) => part.trim().toLowerCase()).filter(Boolean).flatMap((part) => {
+  const words3 = part.split(/\s+/);
+  return words3.length > 1 && words3.slice(0, -1).join(" ").length >= 4 ? [part, words3.slice(0, -1).join(" ")] : [part];
+}).some((part) => new RegExp(`${/^[\p{L}\p{N}]/u.test(part) ? "(^|[^\\p{L}\\p{N}])" : ""}${escapeRe(part)}`, "u").test(text2));
 function finishVideoNotes(html, stats) {
   if (!vn.video) return html;
+  const text2 = pageText(html);
   for (const [key, entry] of vn.glossary) {
-    if (!vn.used.has(key)) stats.componentWarnings?.push({ line: vn.glossaryLine + entry.line + 1, component: "glossary", message: `"${entry.term}" is never used as {g:${entry.term}} on the page` });
+    if (vn.used.has(key) || mentioned(text2, entry.term)) continue;
+    stats.componentWarnings?.push({ line: vn.glossaryLine + entry.line + 1, component: "glossary", message: `"${entry.term}" is not mentioned anywhere on the page` });
   }
   const anchored = html.replace(/<h2>([\s\S]*?)<\/h2>/g, (all, inner) => `<h2 id="${headingSlug(inner.replace(/<a\s[\s\S]*?<\/a>/g, ""))}">${inner}</h2>`);
   const styled = anchored.replace("</head>", `<style>${VN_CSS}</style>

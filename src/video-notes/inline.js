@@ -1,7 +1,7 @@
 // The three inline markers of video notes, as marked extensions: {t:SECONDS}, {tag:kind}, {g:term}.
 // `note(at, message)` reports a problem with the marker as the draft wrote it; the render shows it with its draft line.
 import { esc } from '../svg/text.js';
-import { TAGS, vn, clock, stampHtml } from './state.js';
+import { TAGS, vn, clock, stampHtml, findTerm } from './state.js';
 
 const plain = (text) => text.replace(/`([^`]*)`/g, '$1').replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
 
@@ -40,12 +40,12 @@ export function videoNotesInline(note) {
         return `<span class="vn-tag vn-tag-${esc(kind)}">${esc(TAGS[kind] ?? kind)}</span>`;
       }),
       marker('vnTerm', /^\{g:([^{}|\n]+)\}/, ([, term], raw) => {
-        const entry = vn.glossary.get(term.trim().toLowerCase());
+        const [key, entry] = findTerm(term);
         if (!entry) {
           note(raw, `glossary term "${term.trim()}" has no meaning in the page's glossary block`);
           return esc(term);
         }
-        vn.used.add(term.trim().toLowerCase());
+        vn.used.add(key);
         return `<abbr class="vn-gl" tabindex="0" title="${esc(plain(entry.meaning))}">${esc(term)}</abbr>`;
       }),
     ],

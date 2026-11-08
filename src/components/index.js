@@ -15,10 +15,12 @@ import quiz from './vn-quiz.js';
 import glossary from './vn-glossary.js';
 import shot from './vn-shot.js';
 import videomap from './vn-videomap.js';
+import split from './vn-split.js';
+import compare from './vn-compare.js';
 
 export { ComponentError } from './error.js';
 
-const ALL = [callout, kv, timeline, annot, tree, limits, chart, sequence, flow, er, ask, quiz, glossary, shot, videomap];
+const ALL = [callout, kv, timeline, annot, tree, limits, chart, sequence, flow, er, ask, quiz, glossary, shot, videomap, split, compare];
 
 export const COMPONENTS = new Map(ALL.map((c) => [c.name, c]));
 export const RAW_LANGS = new Set(['html', 'svg']);
