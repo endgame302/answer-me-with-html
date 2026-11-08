@@ -10,10 +10,15 @@ import flow from './flow.js';
 import er from './er.js';
 import ask from './ask.js';
 import chart from './chart.js';
+// Video notes (this fork): self-test, glossary, screenshot, video map.
+import quiz from './vn-quiz.js';
+import glossary from './vn-glossary.js';
+import shot from './vn-shot.js';
+import videomap from './vn-videomap.js';
 
 export { ComponentError } from './error.js';
 
-const ALL = [callout, kv, timeline, annot, tree, limits, chart, sequence, flow, er, ask];
+const ALL = [callout, kv, timeline, annot, tree, limits, chart, sequence, flow, er, ask, quiz, glossary, shot, videomap];
 
 export const COMPONENTS = new Map(ALL.map((c) => [c.name, c]));
 export const RAW_LANGS = new Set(['html', 'svg']);

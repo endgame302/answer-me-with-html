@@ -6,6 +6,7 @@ import { Marked } from 'marked';
 import { filterBlocks, filterInline } from './raw-html.js';
 import { mathExtension } from './math.js';
 import { parseAttrs } from './attrs.js';
+import { videoNotesInline } from './video-notes/inline.js';
 import { esc } from './svg/text.js';
 
 // What the raw-HTML filter changed while collectHtmlNotes is running. Rendering is synchronous, so nothing leaks between calls.
@@ -14,6 +15,17 @@ const note = (at, message) => sink?.push({ at, message });
 
 // Whether $ starts a formula (src/math.js). A video draft turns it off: scenes have no math styles.
 let mathOn = true;
+
+// Ids given to ### and #### headings in one page, so links such as #models-and-tools can target a sub-section.
+let headingIds = new Set();
+export function resetHeadingIds() { headingIds = new Set(); }
+export function headingSlug(text) {
+  const base = text.toLowerCase().replace(/<[^>]+>/g, '').replace(/&[a-z#0-9]+;/g, '').replace(/[^\p{L}\p{N}\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';
+  let id = base, n = 1;
+  while (headingIds.has(id)) id = `${base}-${++n}`;
+  headingIds.add(id);
+  return id;
+}
 
 // Runs render() and returns its result with the notes about the raw HTML it changed: [{ at, message }], at being the tag as the draft wrote it.
 // A formula that Temml cannot read adds a note too, { at, message, math: true }, at being the formula as the draft wrote it.
@@ -34,6 +46,12 @@ export function collectHtmlNotes(render, { math = true } = {}) {
 const marked = new Marked({ gfm: true });
 // parseInline reads one run of inline text and hands the hook inline tokens, so it gets its own parser.
 const inline = new Marked({ gfm: true });
+marked.use({ renderer: { heading({ tokens, depth, text }) {
+  const inner = this.parser.parseInline(tokens);
+  return depth >= 3 ? `<h${depth} id="${headingSlug(text.replace(/\{(?:t|tag):[^}]*\}/g, '').replace(/\{g:([^}|]*)\}/g, '$1').replace(/\[[^\]]*\]\([^)]*\)/g, ''))}">${inner}</h${depth}>
+` : `<h${depth}>${inner}</h${depth}>
+`;
+} } });
 
 const TABLE_ATTR = /^\{table\s+([^{}]*)\}$/;
 let tableUi;
@@ -76,6 +94,8 @@ function tableOptions(tokens) {
 
 marked.use({ hooks: { processAllTokens: (tokens) => filterBlocks(tableOptions(tokens), { lex: (source) => tableOptions(marked.lexer(source)), note }) } });
 inline.use({ hooks: { processAllTokens: (tokens) => filterInline(tokens, note) } });
+marked.use(videoNotesInline(note));
+inline.use(videoNotesInline(note));
 marked.use({ extensions: [{
   name: 'table',
   renderer(token) {

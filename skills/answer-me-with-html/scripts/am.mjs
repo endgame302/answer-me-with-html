@@ -4378,10 +4378,132 @@ function coerce(key, value) {
   return value;
 }
 
+// src/video-notes/state.js
+var TAGS = Object.freeze({
+  shown: "Shown working",
+  claimed: "Claimed",
+  opinion: "Opinion",
+  sponsor: "His own product",
+  version: "Version-specific",
+  notchecked: "Not checked",
+  outside: "From outside the video",
+  notes: "Added by these notes",
+  differs: "Video \u2260 source",
+  screen: "Shown on screen"
+});
+var vn = { video: "", length: 0, glossary: /* @__PURE__ */ new Map(), used: /* @__PURE__ */ new Set() };
+function seconds(value) {
+  const text2 = String(value ?? "").trim();
+  if (!text2) return 0;
+  if (/^\d+$/.test(text2)) return Number(text2);
+  const parts = text2.split(":").map(Number);
+  if (parts.some((n) => !Number.isFinite(n))) return 0;
+  return parts.reduce((total, n) => total * 60 + n, 0);
+}
+function clock(total) {
+  const s = Math.max(0, Math.floor(total));
+  const h = Math.floor(s / 3600);
+  const m2 = Math.floor(s % 3600 / 60);
+  const rest = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m2).padStart(2, "0")}:${rest}` : `${m2}:${rest}`;
+}
+function videoAt(s) {
+  if (!vn.video) return "";
+  const joiner = vn.video.includes("?") ? "&" : "?";
+  return `${vn.video}${joiner}t=${Math.floor(s)}s`;
+}
+function stampHtml(s) {
+  const href = videoAt(s);
+  return href ? `<a class="vn-stamp" href="${esc(href)}" target="_blank" rel="noopener">${clock(s)}</a>` : `<span class="vn-stamp">${clock(s)}</span>`;
+}
+function readGlossary(text2) {
+  const entries = /* @__PURE__ */ new Map();
+  text2.split("\n").forEach((line, i) => {
+    const bar = line.indexOf("|");
+    if (bar < 0 || !line.trim()) return;
+    const term = line.slice(0, bar).trim();
+    const meaning = line.slice(bar + 1).trim();
+    if (term && meaning && !entries.has(term.toLowerCase())) entries.set(term.toLowerCase(), { term, meaning, line: i });
+  });
+  return entries;
+}
+function resetVideoNotes(meta, source) {
+  vn.video = typeof meta.video === "string" ? meta.video.trim() : "";
+  vn.length = seconds(meta.length);
+  vn.used = /* @__PURE__ */ new Set();
+  vn.glossary = /* @__PURE__ */ new Map();
+  vn.glossaryLine = 0;
+  const fence = /^(`{3,})glossary[^\n]*\n([\s\S]*?)^\1\s*$/m.exec(source);
+  if (fence) {
+    vn.glossary = readGlossary(fence[2]);
+    vn.glossaryLine = source.slice(0, fence.index).split("\n").length;
+  }
+}
+
+// src/video-notes/inline.js
+var plain = (text2) => text2.replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+function videoNotesInline(note2) {
+  const marker = (name2, pattern, render) => ({
+    name: name2,
+    level: "inline",
+    // Every marker starts with {, so one indexOf finds the next possible one (a regex per call made long lines slow).
+    start: (src) => {
+      const i = src.indexOf("{");
+      return i < 0 ? void 0 : i;
+    },
+    tokenizer(src) {
+      const m2 = pattern.exec(src);
+      if (m2) return { type: name2, raw: m2[0], m: [...m2] };
+      return void 0;
+    },
+    renderer: (token) => render(token.m, token.raw)
+  });
+  return {
+    // marked tries the extensions registered last first, so the catch-all for unknown markers comes first here.
+    extensions: [
+      // A marker the page does not know, such as {g:term|meaning} or {t:1:20}, is reported instead of showing as text silently.
+      marker("vnUnknown", /^\{(?:t|tag|g):[^}\n]*\}/, ([raw]) => {
+        note2(raw, "marker not understood: use {t:SECONDS}, {tag:kind} or {g:term}");
+        return esc(raw);
+      }),
+      marker("vnStamp", /^\{t:(\d+)\}/, ([, s], raw) => {
+        const at3 = Number(s);
+        if (!vn.video) note2(raw, "timestamp without a video: add video: <url> to the frontmatter");
+        if (vn.length && at3 > vn.length) note2(raw, `timestamp ${clock(at3)} is past the end of the video (${clock(vn.length)})`);
+        return stampHtml(at3);
+      }),
+      marker("vnTag", /^\{tag:([a-z]+)\}/, ([, kind2], raw) => {
+        if (!TAGS[kind2]) note2(raw, `unknown claim tag; use one of ${Object.keys(TAGS).join(", ")}`);
+        return `<span class="vn-tag vn-tag-${esc(kind2)}">${esc(TAGS[kind2] ?? kind2)}</span>`;
+      }),
+      marker("vnTerm", /^\{g:([^{}|\n]+)\}/, ([, term], raw) => {
+        const entry = vn.glossary.get(term.trim().toLowerCase());
+        if (!entry) {
+          note2(raw, `glossary term "${term.trim()}" has no meaning in the page's glossary block`);
+          return esc(term);
+        }
+        vn.used.add(term.trim().toLowerCase());
+        return `<abbr class="vn-gl" tabindex="0" title="${esc(plain(entry.meaning))}">${esc(term)}</abbr>`;
+      })
+    ]
+  };
+}
+
 // src/markdown.js
 var sink = null;
 var note = (at3, message) => sink?.push({ at: at3, message });
 var mathOn = true;
+var headingIds = /* @__PURE__ */ new Set();
+function resetHeadingIds() {
+  headingIds = /* @__PURE__ */ new Set();
+}
+function headingSlug(text2) {
+  const base = text2.toLowerCase().replace(/<[^>]+>/g, "").replace(/&[a-z#0-9]+;/g, "").replace(/[^\p{L}\p{N}\s-]/gu, "").trim().replace(/\s+/g, "-") || "section";
+  let id = base, n = 1;
+  while (headingIds.has(id)) id = `${base}-${++n}`;
+  headingIds.add(id);
+  return id;
+}
 function collectHtmlNotes(render, { math: math2 = true } = {}) {
   const outer = sink;
   const outerMath = mathOn;
@@ -4397,6 +4519,12 @@ function collectHtmlNotes(render, { math: math2 = true } = {}) {
 }
 var marked = new J({ gfm: true });
 var inline = new J({ gfm: true });
+marked.use({ renderer: { heading({ tokens, depth, text: text2 }) {
+  const inner = this.parser.parseInline(tokens);
+  return depth >= 3 ? `<h${depth} id="${headingSlug(text2.replace(/\{(?:t|tag):[^}]*\}/g, "").replace(/\{g:([^}|]*)\}/g, "$1").replace(/\[[^\]]*\]\([^)]*\)/g, ""))}">${inner}</h${depth}>
+` : `<h${depth}>${inner}</h${depth}>
+`;
+} } });
 var TABLE_ATTR = /^\{table\s+([^{}]*)\}$/;
 var tableUi;
 var tableInteractive = true;
@@ -4433,6 +4561,8 @@ function tableOptions(tokens) {
 }
 marked.use({ hooks: { processAllTokens: (tokens) => filterBlocks(tableOptions(tokens), { lex: (source) => tableOptions(marked.lexer(source)), note }) } });
 inline.use({ hooks: { processAllTokens: (tokens) => filterInline(tokens, note) } });
+marked.use(videoNotesInline(note));
+inline.use(videoNotesInline(note));
 marked.use({ extensions: [{
   name: "table",
   renderer(token) {
@@ -4637,17 +4767,17 @@ function sentenceHtml(sentence, line, rtl) {
   }
   const rows = [];
   let out = "";
-  let plain = "";
+  let plain2 = "";
   let last = 0;
   for (const m2 of sentence.matchAll(SEG)) {
     const before = sentence.slice(last, m2.index);
     out += esc(before);
-    plain += before;
+    plain2 += before;
     const [, seg, bang, note2] = m2;
-    const x = measure(plain, TEXT_SIZE, { mono: !rtl });
+    const x = measure(plain2, TEXT_SIZE, { mono: !rtl });
     const noteHtml2 = note2.trim() ? `<span class="am-seg-n" style="--row: ${placeNote(rows, x, x + measure(note2, NOTE_SIZE) + NOTE_GAP)}">${esc(note2.trim())}</span>` : "";
     out += `<span class="am-seg${bang ? " am-seg--err" : ""}"><span class="am-seg-t">${esc(seg)}</span>${noteHtml2}</span>`;
-    plain += seg;
+    plain2 += seg;
     last = m2.index + m2[0].length;
   }
   out += esc(sentence.slice(last));
@@ -6724,7 +6854,7 @@ function rr(e, n = void 0) {
     return (((s = i[1]) != null ? s : 0) + ((a3 = i[2]) != null ? a3 : 0)) / 2;
   }) : {};
 }
-function vn(e, n) {
+function vn2(e, n) {
   let t = P2(e), r = Object.assign($t2(e, t), Ut(e, t)), o = {}, i;
   ["u", "d"].forEach((a3) => {
     i = a3 === "u" ? t : Object.values(t).reverse(), ["l", "r"].forEach((l) => {
@@ -6770,7 +6900,7 @@ function Nn(e, n, t) {
   return o !== -1 && i !== -1 && o === (i + 1) % t.length || o === (i - 1) % t.length;
 }
 function kn(e, n) {
-  e = Z(e), sr(e), Object.entries(vn(e, n)).forEach(([t, r]) => e.node(t).x = r);
+  e = Z(e), sr(e), Object.entries(vn2(e, n)).forEach(([t, r]) => e.node(t).x = r);
 }
 function sr(e) {
   let n = P2(e), t = e.graph(), r = t.ranksep, o = t.rankalign, i = 0;
@@ -7329,8 +7459,8 @@ function nodeState({ before, after, tilde }) {
 function checkLinks(edges) {
   const key = (e) => `${e.from}\0${e.to}`;
   for (const e of edges.filter((x) => x.state)) {
-    const plain = edges.find((x) => !x.state && key(x) === key(e));
-    if (plain) throw new ComponentError(`flow: the link ${e.from} -> ${e.to} is written unmarked on line ${plain.line} and as ${e.state === "added" ? "+" : "-"} here. Mark every line of that link, or none`, e.line);
+    const plain2 = edges.find((x) => !x.state && key(x) === key(e));
+    if (plain2) throw new ComponentError(`flow: the link ${e.from} -> ${e.to} is written unmarked on line ${plain2.line} and as ${e.state === "added" ? "+" : "-"} here. Mark every line of that link, or none`, e.line);
   }
 }
 function groupWarnings(groups, nodes) {
@@ -8604,8 +8734,125 @@ function dataTable({ series, rows }, { type, unit }, words3) {
   return `<details class="am-ch-data${pie ? " am-ch-data--pie" : ""}"><summary>${esc(words3.data)}</summary><div class="am-table-wrap"><table>${head}<tbody>${body.join("")}</tbody></table></div></details>`;
 }
 
+// src/components/vn-quiz.js
+var vn_quiz_default = {
+  name: "quiz",
+  summary: "Video notes: self-test questions with hidden answers and a count of the ones you know",
+  syntax: `\`\`\`quiz
+? Why does the harness matter less and less? {t:120}
+Engineers told him a strong model with a terminal does well in any harness.
+? Next question
+Its answer (Markdown, several lines allowed)
+\`\`\``,
+  example: "```quiz\n? What is his rule for one thread? {t:542}\nOne clear task per thread; fork anything else.\n```",
+  pageOnly: true,
+  render(text2, { uid }) {
+    const items = [];
+    text2.split("\n").forEach((raw, i) => {
+      const line = raw.trimEnd();
+      if (line.startsWith("? ")) items.push({ q: line.slice(2).trim(), a: [], line: i + 1 });
+      else if (items.length) items.at(-1).a.push(raw);
+      else if (line.trim()) throw new ComponentError('quiz: start each question with "? "', i + 1);
+    });
+    if (!items.length) throw new ComponentError('quiz needs at least one "? question" line', 1);
+    const rows = items.map(({ q: q3, a: a3, line }) => {
+      const at3 = q3.match(/\s*\{t:(\d+)\}\s*$/);
+      const question = at3 ? q3.slice(0, at3.index) : q3;
+      const answer = a3.join("\n").trim();
+      if (!answer) throw new ComponentError("quiz: this question has no answer under it", line);
+      const id = uid();
+      const when = at3 ? `<p class="vn-when">From the video at ${stampHtml(Number(at3[1]))}</p>` : "";
+      return `<li class="vn-q"><label><input type="checkbox" class="vn-q-box" id="${id}"><span>${mdInline(question)}</span></label><details><summary>Show answer</summary><div class="am-md">${md(answer)}</div>${when}</details></li>`;
+    });
+    return `<div class="vn-quiz"><ul>${rows.join("")}</ul><p class="vn-quiz-count" aria-live="polite">Tick the questions you can answer.</p></div>`;
+  }
+};
+
+// src/components/vn-glossary.js
+var vn_glossary_default = {
+  name: "glossary",
+  summary: "Video notes: terms and their meanings, used by {g:term} on the page",
+  syntax: "```glossary\nHarness | The agent program that runs a model and gives it tools.\n```",
+  example: "```glossary\nADE | Agent development environment: the app you run coding agents in.\n```",
+  render(text2, { warn }) {
+    const seen = /* @__PURE__ */ new Set();
+    const rows = contentLines(text2).map(({ text: line, line: at3 }) => {
+      const bar = line.indexOf("|");
+      if (bar < 0) throw new ComponentError("glossary: write each line as term | meaning", at3);
+      const term = line.slice(0, bar).trim();
+      const meaning = line.slice(bar + 1).trim();
+      if (!term || !meaning) throw new ComponentError("glossary: a line needs both a term and a meaning", at3);
+      if (seen.has(term.toLowerCase())) warn({ line: at3, message: `glossary: "${term}" is listed twice; the first meaning is used` });
+      seen.add(term.toLowerCase());
+      return `<tr><td>${mdInline(term)}</td><td>${mdInline(meaning)}</td></tr>`;
+    });
+    return `<div class="am-md"><div class="am-table-wrap vn-glossary"><table><thead><tr><th>Term</th><th>Meaning</th></tr></thead><tbody>${rows.join("")}</tbody></table></div></div>`;
+  }
+};
+
+// src/components/vn-shot.js
+var vn_shot_default = {
+  name: "shot",
+  summary: "Video notes: a screenshot with a formatted caption",
+  syntax: "```shot\n/absolute/path/to/frame.jpg\nWhat the frame shows ({t:363}). **1** the part to look at.\n```",
+  // A 1-pixel data: image, so the example renders anywhere (theme specimens render every example).
+  example: "```shot\ndata:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=\nHis board of 15 concepts.\n```",
+  render(text2) {
+    const lines = text2.split("\n");
+    const first = lines.findIndex((l) => l.trim());
+    if (first < 0) throw new ComponentError("shot needs an image path on its first line", 1);
+    const path = lines[first].trim();
+    const caption = lines.slice(first + 1).join(" ").trim();
+    if (!caption) throw new ComponentError("shot needs a caption under the image path: say what the frame shows", first + 2);
+    const alt = caption.replace(/\{t:\d+\}|\{tag:\w+\}|\{g:([^}]+)\}/g, "$1").replace(/[*`]/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+    return `<figure class="vn-shot"><img src="${esc(path)}" alt="${esc(alt)}"><figcaption>${mdInline(caption)}</figcaption></figure>`;
+  }
+};
+
+// src/components/vn-videomap.js
+var vn_videomap_default = {
+  name: "videomap",
+  summary: "Video notes: the parts of the video on a timeline drawn to scale",
+  syntax: "```videomap [end=1:25:40]\nModels and what to learn | 0:00\n*Agent loops | 45:19\n```\n- * highlights a part. The end defaults to the frontmatter length.",
+  example: "```videomap end=30:00\nSetup | 0:00\n*The main idea | 8:20\nWrap-up | 26:00\n```",
+  render(text2, { args, uid }) {
+    const end = seconds(args.match(/\bend=(\S+)/)?.[1]) || vn.length;
+    if (!end) throw new ComponentError("videomap needs the video length: length: in the frontmatter, or end= on the fence line", 0);
+    const rows = contentLines(text2).map(({ text: line, line: at3 }) => {
+      const bar = line.lastIndexOf("|");
+      if (bar < 0) throw new ComponentError("videomap: write each part as title | start", at3);
+      const hot = line.startsWith("*");
+      const title = line.slice(hot ? 1 : 0, bar).trim();
+      const start = seconds(line.slice(bar + 1));
+      if (start >= end) throw new ComponentError(`videomap: ${clock(start)} is not before the end (${clock(end)})`, at3);
+      return { title, start, hot, at: at3 };
+    });
+    rows.forEach((r, i) => {
+      if (i && r.start <= rows[i - 1].start) throw new ComponentError("videomap: list the parts in time order", r.at);
+      r.end = rows[i + 1]?.start ?? end;
+    });
+    const W3 = 720, left = 300, right = 700, top2 = 46, rowH = 40;
+    const X3 = (s) => left + s * (right - left) / end;
+    const minutes = end / 60;
+    const step = minutes > 120 ? 30 : minutes > 40 ? 10 : 5;
+    let g = "";
+    for (let m2 = 0; m2 <= minutes; m2 += step) {
+      g += `<line x1="${X3(m2 * 60)}" x2="${X3(m2 * 60)}" y1="${top2 - 6}" y2="${top2 + rowH * rows.length}" class="vn-map-tick"/><text x="${X3(m2 * 60)}" y="${top2 - 12}" class="vn-map-small" text-anchor="middle">${m2}</text>`;
+    }
+    rows.forEach((r, i) => {
+      const y2 = top2 + 22 + rowH * i;
+      const href = videoAt(r.start);
+      const label = `<text x="12" y="${y2 - 2}" class="vn-map-label">${esc(r.title)}</text><text x="12" y="${y2 + 14}" class="vn-map-small">${clock(r.start)} to ${clock(r.end)} \xB7 ${Math.round((r.end - r.start) / 60)} min</text>`;
+      const rect = `<rect x="${X3(r.start)}" y="${y2 - 12}" width="${Math.max(3, X3(r.end) - X3(r.start))}" height="20" rx="4" class="vn-map-bar${r.hot ? " vn-map-bar--hot" : ""}"/>`;
+      g += href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${label}${rect}</a>` : label + rect;
+    });
+    const h = top2 + rowH * rows.length + 8;
+    return `<figure class="am-diagram vn-map"><svg viewBox="0 0 ${W3} ${h}" width="${W3}" height="${h}" role="img" aria-label="Video map: ${esc(rows.map((r) => r.title).join(", "))}" xmlns="http://www.w3.org/2000/svg"><text x="${left}" y="16" class="vn-map-small">minutes</text>${g}</svg></figure>`;
+  }
+};
+
 // src/components/index.js
-var ALL2 = [callout_default, kv_default, timeline_default, annot_default, tree_default, limits_default, chart_default, sequence_default, flow_default, er_default, ask_default];
+var ALL2 = [callout_default, kv_default, timeline_default, annot_default, tree_default, limits_default, chart_default, sequence_default, flow_default, er_default, ask_default, vn_quiz_default, vn_glossary_default, vn_shot_default, vn_videomap_default];
 var COMPONENTS = new Map(ALL2.map((c2) => [c2.name, c2]));
 var RAW_LANGS = /* @__PURE__ */ new Set(["html", "svg"]);
 
@@ -8904,6 +9151,127 @@ function fractionalCount(key, value, line, keys) {
   if (!keys.has(key) || typeof value !== "string" || !value.trim()) return null;
   const n = Number(value);
   return Number.isFinite(n) && !Number.isInteger(n) ? new ParseError(`${key} must be a whole number, not "${value}"`, line) : null;
+}
+
+// src/sha256.js
+var K3 = Uint32Array.from({ length: 64 }, (_2, i) => {
+  let n = 2;
+  for (let seen = 0; ; n++) {
+    let prime = true;
+    for (let d = 2; d * d <= n; d++) if (n % d === 0) prime = false;
+    if (prime && seen++ === i) break;
+  }
+  return Math.floor(Math.cbrt(n) % 1 * 2 ** 32);
+});
+var rotr = (x, n) => x >>> n | x << 32 - n;
+function sha256Base64(text2) {
+  const data = new TextEncoder().encode(text2);
+  const blocks = Math.ceil((data.length + 9) / 64);
+  const padded = new Uint8Array(blocks * 64);
+  padded.set(data);
+  padded[data.length] = 128;
+  const view = new DataView(padded.buffer);
+  view.setUint32(padded.length - 8, Math.floor(data.length * 8 / 2 ** 32));
+  view.setUint32(padded.length - 4, data.length * 8 >>> 0);
+  const h = Uint32Array.from([2, 3, 5, 7, 11, 13, 17, 19], (p) => Math.floor(Math.sqrt(p) % 1 * 2 ** 32));
+  const w2 = new Uint32Array(64);
+  for (let at3 = 0; at3 < padded.length; at3 += 64) {
+    for (let i = 0; i < 16; i++) w2[i] = view.getUint32(at3 + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w2[i - 15], 7) ^ rotr(w2[i - 15], 18) ^ w2[i - 15] >>> 3;
+      const s1 = rotr(w2[i - 2], 17) ^ rotr(w2[i - 2], 19) ^ w2[i - 2] >>> 10;
+      w2[i] = w2[i - 16] + s0 + w2[i - 7] + s1 >>> 0;
+    }
+    let [a3, b, c2, d, e, f2, g, hh] = h;
+    for (let i = 0; i < 64; i++) {
+      const t1 = hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + (e & f2 ^ ~e & g) + K3[i] + w2[i] >>> 0;
+      const t2 = (rotr(a3, 2) ^ rotr(a3, 13) ^ rotr(a3, 22)) + (a3 & b ^ a3 & c2 ^ b & c2) >>> 0;
+      hh = g;
+      g = f2;
+      f2 = e;
+      e = d + t1 >>> 0;
+      d = c2;
+      c2 = b;
+      b = a3;
+      a3 = t1 + t2 >>> 0;
+    }
+    [a3, b, c2, d, e, f2, g, hh].forEach((v2, i) => {
+      h[i] = h[i] + v2 >>> 0;
+    });
+  }
+  const out = new Uint8Array(32);
+  h.forEach((v2, i) => new DataView(out.buffer).setUint32(i * 4, v2));
+  return btoa(String.fromCharCode(...out));
+}
+
+// src/csp.js
+var LIVE_SCRIPT_BODY = `
+${LIVE_JS}`;
+var scriptHash = (text2) => `'sha256-${sha256Base64(text2)}'`;
+var pinScript = (html, text2) => html.replace(/(<meta http-equiv="Content-Security-Policy" content="[^"]*?script-src )/, `$1${scriptHash(text2)} `);
+function cspMeta(scripts, { live = false } = {}) {
+  const hashes = [...scripts, ...live ? [LIVE_SCRIPT_BODY] : []].map(scriptHash);
+  const policy = [
+    "default-src 'none'",
+    `script-src ${hashes.join(" ")}`,
+    "style-src 'unsafe-inline'",
+    "img-src data:",
+    "font-src data:",
+    "media-src data:",
+    "connect-src 'self'",
+    "form-action 'none'",
+    "base-uri 'none'"
+  ].join("; ");
+  return `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
+}
+
+// src/video-notes/page.js
+var VN_CSS = `
+.vn-stamp{font:600 .78em/1 var(--font-mono);padding:.15em .4em;border:1px solid var(--line-2);border-radius:999px;text-decoration:none;white-space:nowrap;color:var(--accent)}
+a.vn-stamp:hover{background:var(--accent-bg)}
+.vn-tag{display:inline-block;font:600 .7em/1.4 var(--font-sans);padding:0 .45em;border-radius:4px;border:1px solid currentColor;vertical-align:.12em;white-space:nowrap;color:var(--ink-2)}
+.vn-tag-shown,.vn-tag-screen{color:var(--ok)}
+.vn-tag-claimed,.vn-tag-notchecked,.vn-tag-differs{color:var(--warn)}
+.vn-tag-sponsor{color:var(--err)}
+.vn-tag-opinion,.vn-tag-version{color:var(--accent)}
+.vn-gl{text-decoration:underline dotted;text-underline-offset:.2em;cursor:help}
+.vn-shot{margin:1em 0}.vn-shot img{max-width:100%;height:auto;border:1px solid var(--line-2);border-radius:var(--radius)}
+.vn-shot figcaption{font-size:var(--am-fs-small);color:var(--ink-2);margin-top:.4em}
+.vn-quiz ul{list-style:none;padding:0}.vn-q{margin:.5em 0;padding:.5em .7em;border:1px solid var(--line-2);border-radius:var(--radius)}
+.vn-q label{display:flex;gap:.6em;align-items:baseline;cursor:pointer}.vn-q details{margin:.3em 0 0 1.8em}.vn-q summary{cursor:pointer;color:var(--accent)}
+.vn-when{font-size:var(--am-fs-small);color:var(--ink-2)}.vn-quiz-count{font-size:var(--am-fs-small);color:var(--ink-2)}
+.vn-map text{fill:var(--ink)}.vn-map .vn-map-label{font:700 13px var(--font-sans)}.vn-map .vn-map-small{font:11.5px var(--font-sans);fill:var(--ink-2)}
+.vn-map .vn-map-tick{stroke:var(--line-2)}.vn-map .vn-map-bar{fill:var(--fill);stroke:var(--line)}.vn-map .vn-map-bar--hot{fill:var(--accent-bg);stroke:var(--accent)}
+.vn-map a:hover .vn-map-bar{stroke-width:2}
+.am-md h3{font-size:var(--am-fs-heading)}
+`;
+var QUIZ_JS = `(() => {
+  const boxes = [...document.querySelectorAll('.vn-q-box')];
+  if (!boxes.length) return;
+  const key = 'vn-quiz:' + document.title;
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(key) || '{}'); } catch (e) { saved = {}; }
+  const show = () => {
+    const n = boxes.filter((b) => b.checked).length;
+    document.querySelectorAll('.vn-quiz-count').forEach((p) => { p.textContent = 'You can answer ' + n + ' of ' + boxes.length + ' questions on this page.'; });
+  };
+  boxes.forEach((b) => {
+    b.checked = !!saved[b.id];
+    b.addEventListener('change', () => { saved[b.id] = b.checked; try { localStorage.setItem(key, JSON.stringify(saved)); } catch (e) { /* private window */ } show(); });
+  });
+  show();
+})();`;
+function finishVideoNotes(html, stats) {
+  if (!vn.video) return html;
+  for (const [key, entry] of vn.glossary) {
+    if (!vn.used.has(key)) stats.componentWarnings?.push({ line: vn.glossaryLine + entry.line + 1, component: "glossary", message: `"${entry.term}" is never used as {g:${entry.term}} on the page` });
+  }
+  const anchored = html.replace(/<h2>([\s\S]*?)<\/h2>/g, (all, inner) => `<h2 id="${headingSlug(inner.replace(/<a\s[\s\S]*?<\/a>/g, ""))}">${inner}</h2>`);
+  const styled = anchored.replace("</head>", `<style>${VN_CSS}</style>
+</head>`);
+  if (!styled.includes('class="vn-quiz"')) return styled;
+  return pinScript(styled.replace(/<\/body>(?![\s\S]*<\/body>)/, `<script>${QUIZ_JS}</script>
+</body>`), QUIZ_JS);
 }
 
 // src/templates/panel.js
@@ -9777,77 +10145,6 @@ function readEmbeddedImages(html) {
   return new Map([...String(html).matchAll(EMBEDDED)].map(([, src, uri]) => [decodeRef(src), uri]));
 }
 
-// src/sha256.js
-var K3 = Uint32Array.from({ length: 64 }, (_2, i) => {
-  let n = 2;
-  for (let seen = 0; ; n++) {
-    let prime = true;
-    for (let d = 2; d * d <= n; d++) if (n % d === 0) prime = false;
-    if (prime && seen++ === i) break;
-  }
-  return Math.floor(Math.cbrt(n) % 1 * 2 ** 32);
-});
-var rotr = (x, n) => x >>> n | x << 32 - n;
-function sha256Base64(text2) {
-  const data = new TextEncoder().encode(text2);
-  const blocks = Math.ceil((data.length + 9) / 64);
-  const padded = new Uint8Array(blocks * 64);
-  padded.set(data);
-  padded[data.length] = 128;
-  const view = new DataView(padded.buffer);
-  view.setUint32(padded.length - 8, Math.floor(data.length * 8 / 2 ** 32));
-  view.setUint32(padded.length - 4, data.length * 8 >>> 0);
-  const h = Uint32Array.from([2, 3, 5, 7, 11, 13, 17, 19], (p) => Math.floor(Math.sqrt(p) % 1 * 2 ** 32));
-  const w2 = new Uint32Array(64);
-  for (let at3 = 0; at3 < padded.length; at3 += 64) {
-    for (let i = 0; i < 16; i++) w2[i] = view.getUint32(at3 + i * 4);
-    for (let i = 16; i < 64; i++) {
-      const s0 = rotr(w2[i - 15], 7) ^ rotr(w2[i - 15], 18) ^ w2[i - 15] >>> 3;
-      const s1 = rotr(w2[i - 2], 17) ^ rotr(w2[i - 2], 19) ^ w2[i - 2] >>> 10;
-      w2[i] = w2[i - 16] + s0 + w2[i - 7] + s1 >>> 0;
-    }
-    let [a3, b, c2, d, e, f2, g, hh] = h;
-    for (let i = 0; i < 64; i++) {
-      const t1 = hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + (e & f2 ^ ~e & g) + K3[i] + w2[i] >>> 0;
-      const t2 = (rotr(a3, 2) ^ rotr(a3, 13) ^ rotr(a3, 22)) + (a3 & b ^ a3 & c2 ^ b & c2) >>> 0;
-      hh = g;
-      g = f2;
-      f2 = e;
-      e = d + t1 >>> 0;
-      d = c2;
-      c2 = b;
-      b = a3;
-      a3 = t1 + t2 >>> 0;
-    }
-    [a3, b, c2, d, e, f2, g, hh].forEach((v2, i) => {
-      h[i] = h[i] + v2 >>> 0;
-    });
-  }
-  const out = new Uint8Array(32);
-  h.forEach((v2, i) => new DataView(out.buffer).setUint32(i * 4, v2));
-  return btoa(String.fromCharCode(...out));
-}
-
-// src/csp.js
-var LIVE_SCRIPT_BODY = `
-${LIVE_JS}`;
-var scriptHash = (text2) => `'sha256-${sha256Base64(text2)}'`;
-function cspMeta(scripts, { live = false } = {}) {
-  const hashes = [...scripts, ...live ? [LIVE_SCRIPT_BODY] : []].map(scriptHash);
-  const policy = [
-    "default-src 'none'",
-    `script-src ${hashes.join(" ")}`,
-    "style-src 'unsafe-inline'",
-    "img-src data:",
-    "font-src data:",
-    "media-src data:",
-    "connect-src 'self'",
-    "form-action 'none'",
-    "base-uri 'none'"
-  ].join("; ");
-  return `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
-}
-
 // src/render.js
 var RenderError = class extends Error {
   constructor(message, { line, component, example } = {}) {
@@ -9866,9 +10163,11 @@ var LintError = class extends Error {
   }
 };
 function renderDoc(source, overrides = {}, defaults2 = {}, { themes: themes2 = BUILTIN, previousLanguage, baseDir, codeDir, knownImages, knownCode, update: update2, closeAfter = false, colophon: colophon2 = true, scale = 1 } = {}) {
+  resetHeadingIds();
   const choices = { theme: themes2.choices("page") };
   const { doc: parsed, errors } = parseDocLoose(source, { defaults: defaults2, choices });
   const meta = applyOverrides(parsed.meta, overrides, { ...CHOICES, ...choices });
+  resetVideoNotes(meta, source);
   if (meta.template === "video") throw new ParseError("template: video is a video draft; render it with am video", 0);
   const problem = themes2.problem(meta.theme, "page");
   if (problem) throw new ParseError(problem, 0);
@@ -9891,7 +10190,7 @@ function renderDoc(source, overrides = {}, defaults2 = {}, { themes: themes2 = B
   raiseAll(errors);
   const page = TEMPLATES[doc2.meta.template]({ meta: doc2.meta, introHtml, panels, ui, language });
   const body = language.dir === "rtl" ? isolateLtrRuns(page) : page;
-  const html = shell({ meta: doc2.meta, language, body, source, embedded: themes2.embedFor(doc2.meta.theme, "page"), update: update2, closeAfter, colophon: colophon2, scale });
+  const html = finishVideoNotes(shell({ meta: doc2.meta, language, body, source, embedded: themes2.embedFor(doc2.meta.theme, "page"), update: update2, closeAfter, colophon: colophon2, scale }), stats);
   return { html, warnings, stats, meta: doc2.meta, language };
 }
 function hasVisuals({ intro, panels }) {
@@ -10027,11 +10326,11 @@ function updateNotice(ui, update2, labelKey) {
   const notes = lines ? `<p class="am-update-label">${esc(t.whatsNew)}</p>
 <ul class="am-update-notes">${lines.map((l) => `<li>${esc(l).replace(/`([^`]+)`/g, "<code>$1</code>")}</li>`).join("")}</ul>
 ` : "";
-  const plain = t.button.replace("{version}", update2.latest);
+  const plain2 = t.button.replace("{version}", update2.latest);
   const fill2 = (s) => esc(s).replace("{version}", `<bdi>${esc(update2.latest)}</bdi>`).replace("{current}", `<bdi>${esc(update2.current)}</bdi>`);
   const row = (text2, code) => `<div class="am-update-row">${code ? `<code dir="ltr">${esc(text2)}</code>` : `<span>${esc(text2)}</span>`}<button class="am-btn" type="button" data-am="copy-text" data-text="${esc(text2)}" data-done="${esc(ui.done)}">${esc(ui.copyCode)}</button></div>`;
   return {
-    button: `<button class="am-btn am-btn--update" type="button" data-am="update" popovertarget="am-update" aria-label="${esc(plain)}" hidden>\u25CF <span class="am-update-text">${fill2(t.button)}</span></button>
+    button: `<button class="am-btn am-btn--update" type="button" data-am="update" popovertarget="am-update" aria-label="${esc(plain2)}" hidden>\u25CF <span class="am-update-text">${fill2(t.button)}</span></button>
 `,
     popover: `<div class="am-update" id="am-update" popover>
 <p class="am-update-title">${fill2(t.button)}</p>
@@ -11376,8 +11675,8 @@ function captionHtml(raw) {
     return m2 ? `<b>${esc(m2[1])}</b>` : esc(part);
   }).join("");
 }
-function formatClock(seconds) {
-  const total = Math.max(0, Math.round(Number(seconds) || 0));
+function formatClock(seconds2) {
+  const total = Math.max(0, Math.round(Number(seconds2) || 0));
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 function titleScene(meta, introHtml, { scenes, duration }, ui) {
